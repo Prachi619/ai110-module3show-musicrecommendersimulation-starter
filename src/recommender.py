@@ -13,9 +13,23 @@ NUMERIC_WEIGHTS: Dict[str, float] = {
     "instrumentalness": 0.25,
     "acousticness": 0.10,
     "valence": 0.05,
+    # Optional features: each is only scored when the profile sets a target for it.
+    "popularity": 0.05,
+    "speechiness": 0.05,
+    "release_year": 0.05,
 }
+# Features not stored on a 0-1 scale. Song values are rescaled to 0-1 using (low, high).
+FEATURE_RANGES: Dict[str, Tuple[float, float]] = {
+    "popularity": (0.0, 100.0),
+    "release_year": (1980.0, 2025.0),
+}
+# For these features the profile gives a real-world value (a year), so the target is rescaled too.
+# Other targets, like popularity, are already given on a 0-1 scale.
+RAW_TARGET_FEATURES = {"release_year"}
 MOOD_WEIGHT = 0.20
 GENRE_WEIGHT = 0.05
+# Optional: share of the profile's wanted tags that a song has, times this weight.
+TAGS_WEIGHT = 0.10
 # Smaller sigma = pickier. At 0.25 a gap of 0.1 keeps ~92% of the points, 0.3 keeps ~49%, 0.6 keeps ~6%.
 CLOSENESS_SIGMA = 0.25
 # An exact mood match earns full credit; a mood in the same family earns this share.
@@ -48,6 +62,10 @@ class Song:
     danceability: float
     acousticness: float
     instrumentalness: float = 0.0
+    popularity: float = 50.0  # 0-100; how well known the song is
+    release_year: int = 2010
+    speechiness: float = 0.05  # 0-1; spoken words (rap, spoken word) vs. sung or instrumental
+    mood_tags: str = ""  # detailed tags separated by "|", e.g. "late-night|study|cozy"
 
 @dataclass
 class UserProfile:
@@ -60,6 +78,10 @@ class UserProfile:
     target_energy: float
     likes_acoustic: bool
     target_valence: Optional[float] = None
+    target_popularity: Optional[float] = None  # 0-1; 0 = hidden gems, 1 = big hits
+    target_release_year: Optional[int] = None  # e.g. 1995
+    target_speechiness: Optional[float] = None  # 0-1
+    wanted_tags: Optional[List[str]] = None  # e.g. ["late-night", "study"]
 
 
 def _closeness(song_value: float, target: float) -> float:
@@ -78,6 +100,14 @@ def _profile_to_prefs(user: UserProfile) -> Dict:
     }
     if user.target_valence is not None:
         prefs["valence"] = user.target_valence
+    if user.target_popularity is not None:
+        prefs["popularity"] = user.target_popularity
+    if user.target_release_year is not None:
+        prefs["release_year"] = user.target_release_year
+    if user.target_speechiness is not None:
+        prefs["speechiness"] = user.target_speechiness
+    if user.wanted_tags:
+        prefs["tags"] = user.wanted_tags
     return prefs
 
 
@@ -107,9 +137,9 @@ class Recommender:
 
 def load_songs(csv_path: str) -> List[Dict]:
     """Read songs.csv into a list of dicts with numeric fields converted to int/float."""
-    int_fields = {"id"}
+    int_fields = {"id", "release_year"}
     float_fields = {"energy", "tempo_bpm", "valence", "danceability",
-                    "acousticness", "instrumentalness"}
+                    "acousticness", "instrumentalness", "popularity", "speechiness"}
     songs: List[Dict] = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -131,11 +161,18 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
     for feature, weight in NUMERIC_WEIGHTS.items():
         if feature not in user_prefs or feature not in song:
             continue
-        closeness = _closeness(float(song[feature]), float(user_prefs[feature]))
+        low, high = FEATURE_RANGES.get(feature, (0.0, 1.0))
+        song_value = (float(song[feature]) - low) / (high - low)
+        target = float(user_prefs[feature])
+        target_value = (target - low) / (high - low) if feature in RAW_TARGET_FEATURES else target
+        closeness = _closeness(song_value, target_value)
         earned += weight * closeness
         possible += weight
-        reasons.append(f"{feature} {song[feature]:.2f} vs target {user_prefs[feature]:.2f} "
-                       f"(+{weight * closeness * 100:.1f})")
+        if feature in RAW_TARGET_FEATURES:
+            shown = f"{feature} {float(song[feature]):.0f} vs target {target:.0f}"
+        else:
+            shown = f"{feature} {song_value:.2f} vs target {target_value:.2f}"
+        reasons.append(f"{shown} (+{weight * closeness * 100:.1f})")
 
     if "mood" in user_prefs and "mood" in song:
         possible += MOOD_WEIGHT
@@ -155,6 +192,17 @@ def score_song(user_prefs: Dict, song: Dict) -> Tuple[float, List[str]]:
         if song["genre"] == user_prefs["genre"]:
             earned += GENRE_WEIGHT
             reasons.append(f"genre '{song['genre']}' matches (+{GENRE_WEIGHT * 100:.1f})")
+
+    wanted_tags = set(user_prefs.get("tags") or [])
+    if wanted_tags and "mood_tags" in song:
+        possible += TAGS_WEIGHT
+        song_tags = set(str(song["mood_tags"]).split("|"))
+        shared = sorted(wanted_tags & song_tags)
+        if shared:
+            credit = TAGS_WEIGHT * len(shared) / len(wanted_tags)
+            earned += credit
+            reasons.append(f"tags matched: {', '.join(shared)} "
+                           f"({len(shared)} of {len(wanted_tags)}) (+{credit * 100:.1f})")
 
     score = earned / possible if possible else 0.0
     return score, reasons
