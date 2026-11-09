@@ -89,12 +89,27 @@ ADVERSARIAL_PROFILES = {
     },
 }
 
+# Profiles that use the extra attributes: release year, speechiness, popularity and detailed tags.
+ATTRIBUTE_PROFILES = {
+    "Late-night throwback (tags + release year)": {
+        "genre": "blues", "mood": "bittersweet",
+        "energy": 0.40, "valence": 0.40, "acousticness": 0.70, "instrumentalness": 0.30,
+        "release_year": 1990, "speechiness": 0.03, "tags": ["late-night", "heartbreak"],
+    },
+    "Summer party (popularity + tags)": {
+        "genre": "edm", "mood": "euphoric",
+        "energy": 0.90, "valence": 0.85, "acousticness": 0.10, "instrumentalness": 0.05,
+        "release_year": 2022, "speechiness": 0.10, "popularity": 0.90, "tags": ["party", "summer"],
+    },
+}
+
 
 def main() -> None:
     songs = load_songs("data/songs.csv")
     print(f"Loaded songs: {len(songs)}")
 
-    for name, user_prefs in {**STANDARD_PROFILES, **ADVERSARIAL_PROFILES}.items():
+    all_profiles = {**STANDARD_PROFILES, **ADVERSARIAL_PROFILES, **ATTRIBUTE_PROFILES}
+    for name, user_prefs in all_profiles.items():
         recommendations = recommend_songs(user_prefs, songs, k=5)
         print_recommendations(name, user_prefs, recommendations)
 
